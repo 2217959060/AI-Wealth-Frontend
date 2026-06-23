@@ -1,0 +1,42 @@
+/* 引入 Tailwind 核心组件 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 引入高级字体 */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* 全局基础样式 */
+body { 
+  background-color: #fafafa; 
+  color: #0f172a; 
+}
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
+
+.fade-up { 
+  animation: fadeUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; 
+}
+@keyframes fadeUp { 
+  from { opacity: 0; transform: translateY(16px); } 
+  to { opacity: 1; transform: translateY(0); } 
+}
+
+.glass-nav { 
+  background: rgba(255, 255, 255, 0.8); 
+  backdrop-filter: blur(12px); 
+  -webkit-backdrop-filter: blur(12px); 
+  border-bottom: 1px solid rgba(226, 232, 240, 0.8); 
+}
+.glass-bottom { 
+  background: linear-gradient(180deg, transparent 0%, rgba(250,250,250,0.9) 30%, rgba(250,250,250,1) 100%); 
+  backdrop-filter: blur(4px); 
+}
+/* 针对所有核心界面的背景、文字、边框颜色提供 300ms 的平滑过渡 */
+body, div, h2, h3, p, table, th, td, button, input, select, sidebar, aside {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 300ms;
+}
