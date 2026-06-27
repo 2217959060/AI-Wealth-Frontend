@@ -313,23 +313,7 @@ const deleteBill = async (id) => {
     } catch (err) { alert("删除失败") }
 }
 
-const changePage = (delta) => {
-    if (filterType.value) return
-    const maxPage = Math.ceil(totalBills.value / pageSize) || 1
-    const newPage = currentPage.value + delta
-    if (newPage >= 1 && newPage <= maxPage) fetchBills()
-}
 
-const jumpPage = (e) => {
-    if (filterType.value) return
-    const val = parseInt(e.target.value)
-    const maxPage = Math.ceil(totalBills.value / pageSize) || 1
-    if (val >= 1 && val <= maxPage) {
-        fetchBills(val)
-    } else {
-        e.target.value = currentPage.value 
-    }
-}
 
 const initDashboard = () => {
     fetchBills()
