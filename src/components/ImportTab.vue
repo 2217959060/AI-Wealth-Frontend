@@ -35,14 +35,22 @@ const handleFileSelect = (e) => {
     if (files.length > 0) checkAndSetFile(files[0])
 }
 
-// 校验文件格式（限制为 PDF 或 CSV）
+// 校验文件格式（支持 PDF、CSV、Excel）
 const checkAndSetFile = (file) => {
-    const validTypes = ['application/pdf', 'text/csv', 'application/vnd.ms-excel']
+    // 完整的 MIME 类型列表
+    const validTypes = [
+        'application/pdf',
+        'text/csv',
+        'application/vnd.ms-excel',                                    // 旧版 Excel (.xls)
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' // 新版 Excel (.xlsx)
+    ]
     const ext = file.name.split('.').pop().toLowerCase()
-    if (validTypes.includes(file.type) || ['pdf', 'csv'].includes(ext)) {
+    const validExts = ['pdf', 'csv', 'xlsx', 'xls']  // 扩展名白名单
+    
+    if (validTypes.includes(file.type) || validExts.includes(ext)) {
         selectedFile.value = file
     } else {
-        alert("目前仅支持微信/支付宝导出的 PDF 或 CSV 格式账单！")
+        alert("目前支持 .csv、.pdf、.xlsx、.xls 格式的账单文件！")
     }
 }
 
