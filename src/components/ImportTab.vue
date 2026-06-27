@@ -155,7 +155,7 @@ onUnmounted(() => {
                 ]"
                 class="border-2 border-dashed rounded-3xl p-12 transition-all duration-300 flex flex-col items-center justify-center text-center bg-white dark:bg-slate-800 shadow-sm hover:shadow-md group"
             >
-                <input type="file" ref="fileInput" class="hidden" accept=".csv, .pdf" @change="handleFileSelect">
+                <input type="file" ref="fileInput" class="hidden" accept=".csv,.pdf,.xlsx,.xls" @change="handleFileSelect">
                 
                 <div class="w-20 h-20 bg-slate-50 dark:bg-slate-700 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300">
                     <svg class="w-10 h-10 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
@@ -164,7 +164,7 @@ onUnmounted(() => {
                 <h3 v-if="!selectedFile" class="text-lg font-bold text-slate-700 dark:text-white mb-2">点击选择文件，或拖拽到这里</h3>
                 <h3 v-else class="text-lg font-bold text-indigo-600 mb-2">{{ selectedFile.name }}</h3>
                 
-                <p class="text-sm text-slate-400">目前支持 .csv 与 .pdf 格式</p>
+                <p class="text-sm text-slate-400">目前支持 .csv 、 .pdf 与 .xlsx 、 .xls 格式</p>
 
                 <button 
                     v-if="selectedFile && !isUploading"

@@ -7,11 +7,62 @@ import { useVirtualList } from '@vueuse/core'
 import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable' 
-import ExportWorker from '../workers/exportWorker.js?worker' 
+import ExportWorker from '../workers/exportWorker.js?worker'
 
 const isExportingExcel = ref(false) 
 const modalStore = useModalStore()
 const isLoading = ref(false) 
+
+// ========== 批量删除相关 ==========
+const showBatchDeleteModal = ref(false)
+const deleteAll = ref(true)  // 默认删除全部
+const startDate = ref('')
+const endDate = ref('')
+
+// 设置默认日期范围为本月1号至今天
+const setDefaultDateRange = () => {
+  const now = new Date()
+  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1)
+  startDate.value = firstDay.toISOString().slice(0, 10)
+  endDate.value = now.toISOString().slice(0, 10)
+}
+// 打开弹窗时设置默认日期
+const openBatchDeleteModal = () => {
+  setDefaultDateRange()
+  deleteAll.value = true
+  showBatchDeleteModal.value = true
+}
+
+const closeBatchDeleteModal = () => {
+  showBatchDeleteModal.value = false
+}
+
+const confirmBatchDelete = async () => {
+  try {
+    let url = '/bill/bulk_delete?'
+    if (deleteAll.value) {
+      url += 'delete_all=true'
+    } else {
+      if (!startDate.value || !endDate.value) {
+        alert('请选择起始日期和结束日期')
+        return
+      }
+      url += `start_date=${startDate.value}&end_date=${endDate.value}`
+    }
+    const res = await fetchWithAuth(url, { method: 'DELETE' })
+    if (res.code === 200) {
+      alert('✅ 批量删除成功！账单已移至回收站。')
+      closeBatchDeleteModal()
+      initDashboard() // 刷新列表
+    } else {
+      alert('❌ 删除失败：' + (res.msg || '未知错误'))
+    }
+  } catch (err) {
+    console.error('批量删除失败:', err)
+    alert('❌ 请求失败，请检查网络或后端状态。')
+  }
+}
+// ========== 批量删除结束 ==========
 
 const currentMonth = ref(new Date().toISOString().slice(0, 7))
 const stats = ref({ weekIn: 0, weekOut: 0, monthBalance: 0, monthOut: 0 })
@@ -181,7 +232,6 @@ const fetchTopStats = async () => {
 const fetchBills = async () => {
     isLoading.value = true 
     try {
-        // 假设我们一次性拉取 1000 条数据来演示虚拟滚动的威力
         const endpoint = filterType.value 
             ? `/bill/filter?type=${filterType.value}&size=1000` 
             : `/bill/list?page=1&size=1000` 
@@ -196,7 +246,6 @@ const fetchBills = async () => {
     }
 }
 
-// 假设每行高度 56px（根据你的实际行高调整）
 const { list, containerProps, wrapperProps } = useVirtualList(bills, {
     itemHeight: 56,
 })
@@ -268,7 +317,7 @@ const changePage = (delta) => {
     if (filterType.value) return
     const maxPage = Math.ceil(totalBills.value / pageSize) || 1
     const newPage = currentPage.value + delta
-    if (newPage >= 1 && newPage <= maxPage) fetchBills(newPage)
+    if (newPage >= 1 && newPage <= maxPage) fetchBills()
 }
 
 const jumpPage = (e) => {
@@ -283,7 +332,7 @@ const jumpPage = (e) => {
 }
 
 const initDashboard = () => {
-    fetchBills(1)
+    fetchBills()
     renderCharts()
 }
 
@@ -295,7 +344,6 @@ onMounted(() => {
     })
 })
 
-// 🌟 2. 修复 Echarts 配合 KeepAlive 空白的问题（变量名）
 onActivated(() => {
     setTimeout(() => {
         if (lineChartInstance) lineChartInstance.resize()
@@ -373,6 +421,11 @@ watch(() => modalStore.globalRefreshKey, () => {
                     流水明细 <span class="text-xs font-normal text-slate-400 ml-1">({{ totalBills }} 条)</span>
                 </h3>
                 <div class="flex gap-2">
+                    <!-- 🗑️ 批量删除按钮（放在最左边） -->
+                    <button @click="openBatchDeleteModal" 
+                            class="text-red-600 dark:text-red-400 border border-red-200 dark:border-red-500/20 bg-red-50 dark:bg-red-500/10 px-3 py-1.5 rounded-md text-xs font-bold hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors">
+                        🗑️ 批量删除
+                    </button>
                     <button 
                         @click="exportExcel" 
                         :disabled="isExportingExcel"
@@ -388,7 +441,7 @@ watch(() => modalStore.globalRefreshKey, () => {
                     </button>
                     <button @click="exportPDF" class="text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-500/20 bg-rose-50 dark:bg-rose-500/10 px-3 py-1.5 rounded-md text-xs font-bold hover:bg-rose-100 dark:hover:bg-rose-500/20 transition-colors">PDF</button>
 
-                    <select v-model="filterType" @change="fetchBills(1)" class="px-3 py-1.5 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-sm font-medium outline-none shadow-sm cursor-pointer transition-colors">
+                    <select v-model="filterType" @change="fetchBills()" class="px-3 py-1.5 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-sm font-medium outline-none shadow-sm cursor-pointer transition-colors">
                         <option value="">全部记录</option>
                         <option value="expense">仅支出</option>
                         <option value="income">仅收入</option>
@@ -439,6 +492,37 @@ watch(() => modalStore.globalRefreshKey, () => {
             
     </div>
 </div>
+
+<!-- ========== 批量删除模态框（内联） ========== -->
+<div v-if="showBatchDeleteModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" @click.self="closeBatchDeleteModal">
+    <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 mx-4 transition-colors">
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-xl font-bold text-slate-800 dark:text-slate-200">🗑️ 批量删除账单</h2>
+            <button @click="closeBatchDeleteModal" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-2xl leading-none">&times;</button>
+        </div>
+        <div class="space-y-4">
+            <div class="flex items-center gap-3">
+                <input type="checkbox" id="deleteAll" v-model="deleteAll" class="w-4 h-4 text-red-600 border-slate-300 rounded focus:ring-red-500">
+                <label for="deleteAll" class="text-sm font-medium text-slate-700 dark:text-slate-300">删除全部账单（移至回收站）</label>
+            </div>
+            <div v-if="!deleteAll" class="space-y-3">
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">起始日期</label>
+                    <input type="date" v-model="startDate" class="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 text-sm focus:ring-2 focus:ring-red-500 focus:border-transparent outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">结束日期</label>
+                    <input type="date" v-model="endDate" class="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 text-sm focus:ring-2 focus:ring-red-500 focus:border-transparent outline-none">
+                </div>
+            </div>
+            <div class="flex gap-3 pt-2">
+                <button @click="confirmBatchDelete" class="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-lg transition-colors text-sm">确认删除</button>
+                <button @click="closeBatchDeleteModal" class="flex-1 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-200 font-semibold py-2.5 rounded-lg transition-colors text-sm">取消</button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ========== 批量删除模态框结束 ========== -->
 
 </template>
 <style scoped>

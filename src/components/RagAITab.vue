@@ -55,7 +55,7 @@ const clearChat = async () => {
       const token = localStorage.getItem('jwt_token')
       if (!token) return
 
-      await fetch(`${API_BASE}/ai/chat/history?chat_type=finance`, {
+      await fetch(`${API_BASE}/ai/chat/history?chat_type=rag`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
