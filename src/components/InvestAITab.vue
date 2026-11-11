@@ -6,11 +6,33 @@ const API_BASE = 'http://127.0.0.1:8000'
 const defaultWelcome = '您好，我是您的智能理财顾问。我已为您全面盘点本月资产与收支流向，并深度融合了最新的市场权威财务模型与资产配置策略。\n\n本月想优先为您量身定制指数基金定投规划，还是共同评估并测算您的财务自由（FIRE）进度？'
 
 const messages = ref([
-    { role: 'ai', content: defaultWelcome }
+    { role: 'ai', content: defaultWelcome, toolTrace: [], toolTraceExpanded: false }
 ])
 const inputVal = ref('')
 const isGenerating = ref(false)
 const chatBoxRef = ref(null)
+
+const TOOL_LABELS = {
+    summarize_spend_by_category: '近3个月支出品类汇总',
+}
+
+const toolFriendlyTitle = (trace) => {
+    if (!trace || !trace.length) return '近期消费结构'
+    const first = trace[0]
+    return TOOL_LABELS[first.tool] || '近期消费结构'
+}
+
+const toolStatusText = (step) => {
+    if (!step) return ''
+    if (!step.ok) return '失败'
+    if (step.empty) return '无支出记录'
+    return '成功'
+}
+
+const toggleToolTrace = (msg) => {
+    if (!msg.toolTrace || !msg.toolTrace.length) return
+    msg.toolTraceExpanded = !msg.toolTraceExpanded
+}
 
 // 📊 HUD 实时数据面板响应式变量
 const hudData = ref({
@@ -77,7 +99,7 @@ const sendMessage = async () => {
     isGenerating.value = true
     scrollToBottom()
 
-    messages.value.push({ role: 'ai', content: '' })
+    messages.value.push({ role: 'ai', content: '', toolTrace: [], toolTraceExpanded: false })
     const aiMsgIndex = messages.value.length - 1
 
     try {
@@ -88,7 +110,14 @@ const sendMessage = async () => {
             body: JSON.stringify({ text: text })
         })
 
-        if (!response.ok) throw new Error("请求失败")
+        if (!response.ok) {
+            let detail = `请求失败 (HTTP ${response.status})`
+            try {
+                const errData = await response.json()
+                detail = errData.msg || errData.detail || detail
+            } catch (e) {}
+            throw new Error(detail)
+        }
 
         const reader = response.body.getReader()
         const decoder = new TextDecoder('utf-8')
@@ -106,7 +135,13 @@ const sendMessage = async () => {
                     if (dataStr === '[DONE]') break
                     try {
                         const dataObj = JSON.parse(dataStr)
-                        messages.value[aiMsgIndex].content += dataObj.text
+                        if (dataObj.tool_trace) {
+                            messages.value[aiMsgIndex].toolTrace = dataObj.tool_trace
+                            messages.value[aiMsgIndex].toolTraceExpanded = false
+                        }
+                        if (dataObj.text) {
+                            messages.value[aiMsgIndex].content += dataObj.text
+                        }
                         scrollToBottom()
                     } catch (e) {}
                 }
@@ -114,7 +149,8 @@ const sendMessage = async () => {
         }
         fetchHudData()
     } catch (err) {
-        messages.value[aiMsgIndex].content = "❌ 财富顾问连接失败，请检查网络。"
+        const msg = err && err.message ? err.message : "网络错误，流式接收失败。"
+        messages.value[aiMsgIndex].content = `❌ ${msg}`
     } finally {
         isGenerating.value = false
     }
@@ -133,7 +169,7 @@ const renderMarkdown = (text) => {
 
 const clearChat = () => {
     if(confirm("确定要重新开启一轮资产评估吗？")) {
-        messages.value = [{ role: 'ai', content: defaultWelcome }]
+        messages.value = [{ role: 'ai', content: defaultWelcome, toolTrace: [], toolTraceExpanded: false }]
     }
 }
 </script>
@@ -179,9 +215,58 @@ const clearChat = () => {
                 <div :class="msg.role === 'user' ? 'bg-slate-900 text-white rounded-tr-sm' : 'bg-white border border-slate-200/80 text-slate-800 rounded-tl-sm'" 
                      class="px-5 py-3.5 rounded-2xl shadow-sm text-[14px] max-w-[80%] leading-relaxed tracking-wide">
                     <div v-if="msg.role === 'user'" class="whitespace-pre-wrap font-medium">{{ msg.content }}</div>
-                    <div v-else class="w-full markdown-body">
-                        <span v-html="renderMarkdown(msg.content)"></span>
-                        <span v-if="isGenerating && index === messages.length - 1 && msg.role === 'ai'" class="inline-block w-1.5 h-3.5 bg-indigo-500 animate-pulse ml-1 align-middle"></span>
+                    <div v-else class="w-full space-y-3">
+                        <!-- 默认折叠：中文一行；展开才见技术名 -->
+                        <div
+                            v-if="msg.toolTrace && msg.toolTrace.length"
+                            class="rounded-xl border border-amber-100/80 bg-amber-50/50 overflow-hidden"
+                        >
+                            <button
+                                type="button"
+                                class="w-full flex items-center gap-1.5 px-3 py-2 text-left hover:bg-amber-50 transition-colors"
+                                :aria-expanded="!!msg.toolTraceExpanded"
+                                @click="toggleToolTrace(msg)"
+                            >
+                                <span class="text-[11px] font-bold text-amber-900 whitespace-nowrap">
+                                    📊 已结合{{ toolFriendlyTitle(msg.toolTrace) }}
+                                </span>
+                                <span
+                                    class="text-amber-600 text-[10px] leading-none select-none transition-transform duration-200"
+                                    :class="msg.toolTraceExpanded ? 'rotate-180' : ''"
+                                    aria-hidden="true"
+                                >▾</span>
+                                <span class="text-[10px] text-amber-700/70 font-medium ml-0.5 truncate">
+                                    {{ msg.toolTraceExpanded ? '点击收起' : '点击查看工具详情' }}
+                                </span>
+                            </button>
+
+                            <div
+                                v-show="msg.toolTraceExpanded"
+                                class="px-3 pb-2.5 space-y-1.5 border-t border-amber-100/80"
+                            >
+                                <div
+                                    v-for="(step, sIdx) in msg.toolTrace"
+                                    :key="sIdx"
+                                    class="text-[11px] text-slate-600 bg-white/90 border border-amber-100 rounded-lg px-2.5 py-1.5"
+                                >
+                                    <div class="font-semibold text-slate-700">
+                                        {{ TOOL_LABELS[step.tool] || step.tool }}
+                                        <span
+                                            class="ml-1 font-medium"
+                                            :class="step.ok ? 'text-emerald-600' : 'text-rose-600'"
+                                        >· {{ toolStatusText(step) }}</span>
+                                    </div>
+                                    <div class="text-[10px] text-slate-400 font-mono mt-0.5">
+                                        tool: {{ step.tool }}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="markdown-body">
+                            <span v-html="renderMarkdown(msg.content || '')"></span>
+                            <span v-if="isGenerating && index === messages.length - 1 && msg.role === 'ai'" class="inline-block w-1.5 h-3.5 bg-indigo-500 animate-pulse ml-1 align-middle"></span>
+                        </div>
                     </div>
                 </div>
             </div>

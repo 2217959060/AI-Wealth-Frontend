@@ -1,15 +1,21 @@
 <script setup>
-import { ref, nextTick, onMounted } from 'vue' // 👈 引入 onMounted
+import { ref, nextTick, onMounted } from 'vue'
 import { marked } from 'marked'
 
 const API_BASE = 'http://127.0.0.1:8000'
-const defaultWelcome = '已载入《保险条款.pdf》。遇到理赔纠纷或条款疑惑，请直接描述你的情况。'
-const messages = ref([{ role: 'ai', content: defaultWelcome }])
+// 阶段 A：与后端真 RAG 对齐的诚实欢迎语（不再假装「已载入 PDF」营销话术）
+const defaultWelcome =
+  '理赔顾问已启用条款向量检索（RAG）。先检索本地条款再回答；无足够相关召回时则无法确定。'
+const messages = ref([{ role: 'ai', content: defaultWelcome, sources: [], sourcesExpanded: false, guards: [] }])
 const inputVal = ref('')
 const isGenerating = ref(false)
 const chatBoxRef = ref(null)
 
-// 🌟 新增：页面加载时拉取历史记录 (注意这里 chat_type 是 rag)
+const toggleSources = (msg) => {
+  if (!msg.sources || !msg.sources.length) return
+  msg.sourcesExpanded = !msg.sourcesExpanded
+}
+
 const loadHistory = async () => {
   try {
     const token = localStorage.getItem('jwt_token')
@@ -21,7 +27,15 @@ const loadHistory = async () => {
     const resData = await response.json()
 
     if (resData.code === 200 && resData.data.history && resData.data.history.length > 0) {
-      messages.value = [{ role: 'ai', content: defaultWelcome }, ...resData.data.history]
+      messages.value = [
+        { role: 'ai', content: defaultWelcome, sources: [], sourcesExpanded: false, guards: [] },
+        ...resData.data.history.map((m) => ({
+          ...m,
+          sources: m.sources || [],
+          sourcesExpanded: false,
+          guards: m.guards || [],
+        })),
+      ]
       scrollToBottom()
     }
   } catch (e) {
@@ -44,13 +58,10 @@ const sendPrompt = (text) => {
   sendMessage()
 }
 
-// 🌟 升级版：真正的清空当前会话记忆（前端清屏 + 后端删库）
 const clearChat = async () => {
   if (confirm('确定要开启新对话，并清除管家刚才的短期记忆吗？')) {
-    // 1. 先把前端界面清空
-    messages.value = [{ role: 'ai', content: defaultWelcome }]
+    messages.value = [{ role: 'ai', content: defaultWelcome, sources: [], sourcesExpanded: false, guards: [] }]
 
-    // 2. 通知后端把 Redis 里的数据删掉
     try {
       const token = localStorage.getItem('jwt_token')
       if (!token) return
@@ -79,7 +90,7 @@ const sendMessage = async () => {
   isGenerating.value = true
   scrollToBottom()
 
-  messages.value.push({ role: 'ai', content: '' })
+  messages.value.push({ role: 'ai', content: '', sources: [], sourcesExpanded: false, guards: [] })
   const aiMsgIndex = messages.value.length - 1
 
   try {
@@ -90,7 +101,14 @@ const sendMessage = async () => {
       body: JSON.stringify({ text: text }),
     })
 
-    if (!response.ok) throw new Error('请求失败')
+    if (!response.ok) {
+      let detail = `请求失败 (HTTP ${response.status})`
+      try {
+        const errData = await response.json()
+        detail = errData.msg || errData.detail || detail
+      } catch (e) {}
+      throw new Error(detail)
+    }
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder('utf-8')
@@ -108,14 +126,25 @@ const sendMessage = async () => {
           if (dataStr === '[DONE]') break
           try {
             const dataObj = JSON.parse(dataStr)
-            messages.value[aiMsgIndex].content += dataObj.text
+            if (dataObj.sources) {
+              messages.value[aiMsgIndex].sources = dataObj.sources
+              // 默认折叠，便于先看结论
+              messages.value[aiMsgIndex].sourcesExpanded = false
+            }
+            if (dataObj.guards) {
+              messages.value[aiMsgIndex].guards = dataObj.guards
+            }
+            if (dataObj.text) {
+              messages.value[aiMsgIndex].content += dataObj.text
+            }
             scrollToBottom()
           } catch (e) {}
         }
       }
     }
   } catch (err) {
-    messages.value[aiMsgIndex].content = '❌ 网络错误，流式接收失败。'
+    const msg = err && err.message ? err.message : '网络错误，流式接收失败。'
+    messages.value[aiMsgIndex].content = `❌ ${msg}`
   } finally {
     isGenerating.value = false
   }
@@ -130,7 +159,10 @@ const sendMessage = async () => {
           class="bg-purple-100 text-purple-700 w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold"
           >🛡️</span
         >
-        <h1 class="text-sm font-bold text-slate-800">Claims Advisor</h1>
+        <div>
+          <h1 class="text-sm font-bold text-slate-800">Claims Advisor</h1>
+          <p class="text-[10px] text-slate-400 font-medium tracking-wide">条款 RAG · 可引用 sources</p>
+        </div>
       </div>
       <button
         @click="clearChat"
@@ -163,12 +195,73 @@ const sendMessage = async () => {
           class="px-5 py-3.5 rounded-2xl shadow-sm text-[15px] max-w-[85%] leading-relaxed"
         >
           <div v-if="msg.role === 'user'" class="whitespace-pre-wrap">{{ msg.content }}</div>
-          <div v-else class="markdown-body inline">
-            <span v-html="marked.parse(msg.content)"></span>
-            <span
-              v-if="isGenerating && index === messages.length - 1 && msg.role === 'ai'"
-              class="inline-block w-2 h-4 bg-purple-500 animate-pulse ml-1 align-middle"
-            ></span>
+          <div v-else class="space-y-3">
+            <!-- 检索引用：默认折叠，整行可点，标题与三角紧挨 -->
+            <div
+              v-if="msg.sources && msg.sources.length"
+              class="rounded-xl border border-purple-100 bg-purple-50/70 overflow-hidden"
+            >
+              <button
+                type="button"
+                class="w-full flex items-center gap-1.5 px-3 py-2.5 text-left hover:bg-purple-50 transition-colors"
+                :aria-expanded="!!msg.sourcesExpanded"
+                @click="toggleSources(msg)"
+              >
+                <span class="text-[11px] font-bold text-purple-700 tracking-wide whitespace-nowrap">
+                  📚 检索引用 ({{ msg.sources.length }})
+                </span>
+                <span
+                  class="text-purple-500 text-[10px] leading-none select-none transition-transform duration-200"
+                  :class="msg.sourcesExpanded ? 'rotate-180' : ''"
+                  aria-hidden="true"
+                  >▾</span
+                >
+                <span class="text-[10px] text-purple-400/90 font-medium ml-1 truncate">
+                  {{ msg.sourcesExpanded ? '点击收起' : '已召回条款片段 · 点击查看' }}
+                </span>
+              </button>
+
+              <div
+                v-show="msg.sourcesExpanded"
+                class="px-3 pb-3 space-y-2 border-t border-purple-100/80"
+              >
+                <div
+                  v-for="s in msg.sources"
+                  :key="s.index"
+                  class="text-xs text-slate-600 bg-white/90 border border-purple-100 rounded-lg px-3 py-2"
+                >
+                  <div class="font-semibold text-purple-800 mb-0.5">
+                    [#{{ s.index }}]
+                    <span v-if="s.page">p.{{ s.page }}</span>
+                    <span v-if="s.score != null" class="text-slate-400 font-normal ml-1"
+                      >score {{ s.score }}</span
+                    >
+                  </div>
+                  <div class="leading-snug text-slate-600">{{ s.snippet }}</div>
+                </div>
+              </div>
+            </div>
+
+            <div
+              v-if="msg.guards && msg.guards.length"
+              class="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-1.5 font-medium"
+            >
+              安全闸门已拦截：{{
+                msg.guards.includes('policy_hard_refuse_empty')
+                  ? '无相关条款召回 · 代码层拒答'
+                  : msg.guards.includes('policy_hard_refuse_filtered')
+                    ? '召回距离过远已滤除 · 代码层拒答'
+                    : msg.guards.join(', ')
+              }}
+            </div>
+
+            <div class="markdown-body inline">
+              <span v-html="marked.parse(msg.content || '')"></span>
+              <span
+                v-if="isGenerating && index === messages.length - 1 && msg.role === 'ai'"
+                class="inline-block w-2 h-4 bg-purple-500 animate-pulse ml-1 align-middle"
+              ></span>
+            </div>
           </div>
         </div>
       </div>
@@ -198,7 +291,7 @@ const sendMessage = async () => {
           @keyup.enter="sendMessage"
           type="text"
           class="flex-1 bg-transparent border-none outline-none text-base placeholder-slate-400"
-          placeholder="检索保险知识库..."
+          placeholder="描述理赔场景，将检索本地条款后回答..."
         />
         <button
           @click="sendMessage"
