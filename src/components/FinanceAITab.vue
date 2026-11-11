@@ -5,12 +5,62 @@ import AiChart from './AiChart.vue'
 
 const API_BASE = 'http://127.0.0.1:8000'
 const defaultWelcome = '我已经连接了全局账本数据库。关于收支分析、预算吐槽，放马过来吧。'
-const messages = ref([{ role: 'ai', content: defaultWelcome }])
+const messages = ref([{
+    role: 'ai',
+    content: defaultWelcome,
+    toolTrace: [],
+    guards: [],
+    memoryTrace: null,
+    memoryExpanded: false,
+    toolsExpanded: false,
+}])
 const inputVal = ref('')
 const isGenerating = ref(false)
 const chatBoxRef = ref(null)
 
-// 🌟 新增：手动触发后端进行长效记忆提炼 (RAG)
+const TOOL_LABELS = {
+    query_bills: '查明细/日汇总',
+    aggregate_stats: '汇总统计',
+    get_financial_data: '查询财务数据',
+}
+
+const GUARD_LABELS = {
+    chart_validation_passed: '图表数字已核对',
+    empty_or_fail_gate_stripped_echarts: '已拦截空数据图表',
+    empty_gate_fallback_text: '空结果已降级为纯文字',
+    chart_parse_failed_stripped: '图表解析失败已移除',
+}
+
+const toolLabel = (name) => TOOL_LABELS[name] || name
+const guardLabel = (g) => {
+    if (GUARD_LABELS[g]) return GUARD_LABELS[g]
+    if (String(g).startsWith('chart_validation_failed')) return '图表数字未通过对账（已处理）'
+    return g
+}
+const toolStatusText = (step) => {
+    if (!step?.ok) return '失败'
+    if (step.empty) return '无记录'
+    return '成功'
+}
+const hasMemoryMeta = (msg) => !!(msg.memoryTrace && (msg.memoryTrace.query_hits || msg.memoryTrace.fixed_hits || msg.memoryTrace.error))
+const hasToolsMeta = (msg) => !!(msg.toolTrace?.length || msg.guards?.length)
+const memorySummary = (msg) => {
+    const q = (msg.memoryTrace?.query_hits || []).length
+    const f = (msg.memoryTrace?.fixed_hits || []).length
+    return `问题相关 ${q} · 固定侧写 ${f}`
+}
+const toolsSummary = (msg) => {
+    const n = msg.toolTrace?.length || 0
+    const passed = (msg.guards || []).some((g) => g === 'chart_validation_passed')
+    if (n && passed) return `已查询账单（${n} 步）· 图表校验通过`
+    if (n) return `已查询账单数据（${n} 步）`
+    if ((msg.guards || []).length) return '安全校验已执行'
+    return '分析依据'
+}
+const toggleMemory = (msg) => { msg.memoryExpanded = !msg.memoryExpanded }
+const toggleTools = (msg) => { msg.toolsExpanded = !msg.toolsExpanded }
+
+// 长效习惯侧写提炼（profile 注入，不是问答 RAG）
 const isExtracting = ref(false)
 const extractMemory = async () => {
     if (isExtracting.value) return
@@ -28,7 +78,12 @@ const extractMemory = async () => {
             const insightsText = resData.data.insights.map(i => `- ${i}`).join('\n')
             messages.value.push({ 
                 role: 'ai', 
-                content: `🧠 **长效记忆已更新！我刚偷看了你的账本，发现了以下致命习惯：**\n\n${insightsText}\n\n以后你再乱花钱，我就拿这些怼你！` 
+                content: `🧠 **长效记忆已更新！我刚偷看了你的账本，发现了以下致命习惯：**\n\n${insightsText}\n\n以后你再乱花钱，我就拿这些怼你！`,
+                toolTrace: [],
+                guards: [],
+                memoryTrace: null,
+                memoryExpanded: false,
+                toolsExpanded: false,
             })
             scrollToBottom()
         }
@@ -51,8 +106,25 @@ const loadHistory = async () => {
         const resData = await response.json()
         
         if (resData.code === 200 && resData.data.history && resData.data.history.length > 0) {
-            // 将历史记录拼接到欢迎语后面
-            messages.value = [{ role: 'ai', content: defaultWelcome }, ...resData.data.history]
+            messages.value = [
+                {
+                    role: 'ai',
+                    content: defaultWelcome,
+                    toolTrace: [],
+                    guards: [],
+                    memoryTrace: null,
+                    memoryExpanded: false,
+                    toolsExpanded: false,
+                },
+                ...resData.data.history.map((m) => ({
+                    ...m,
+                    toolTrace: [],
+                    guards: [],
+                    memoryTrace: null,
+                    memoryExpanded: false,
+                    toolsExpanded: false,
+                })),
+            ]
             scrollToBottom()
         }
     } catch (e) {
@@ -82,7 +154,15 @@ const sendPrompt = (text) => {
 const clearChat = async () => {
     if(confirm("确定要开启新对话，并清除管家刚才的短期记忆吗？")) {
         // 1. 先把前端界面清空
-        messages.value = [{ role: 'ai', content: defaultWelcome }]
+        messages.value = [{
+            role: 'ai',
+            content: defaultWelcome,
+            toolTrace: [],
+            guards: [],
+            memoryTrace: null,
+            memoryExpanded: false,
+            toolsExpanded: false,
+        }]
         
         // 2. 通知后端把 Redis 里的数据删掉
         try {
@@ -156,7 +236,15 @@ const sendMessage = async () => {
     isGenerating.value = true
     scrollToBottom()
 
-    messages.value.push({ role: 'ai', content: '' })
+    messages.value.push({
+        role: 'ai',
+        content: '',
+        toolTrace: [],
+        guards: [],
+        memoryTrace: null,
+        memoryExpanded: false,
+        toolsExpanded: false,
+    })
     const aiMsgIndex = messages.value.length - 1
 
     try {
@@ -185,7 +273,21 @@ const sendMessage = async () => {
                     if (dataStr === '[DONE]') break
                     try {
                         const dataObj = JSON.parse(dataStr)
-                        messages.value[aiMsgIndex].content += dataObj.text
+                        if (dataObj.memory_trace) {
+                            messages.value[aiMsgIndex].memoryTrace = dataObj.memory_trace
+                            messages.value[aiMsgIndex].memoryExpanded = false
+                        }
+                        if (dataObj.tool_trace) {
+                            messages.value[aiMsgIndex].toolTrace = dataObj.tool_trace
+                            messages.value[aiMsgIndex].toolsExpanded = false
+                        }
+                        if (dataObj.guards) {
+                            messages.value[aiMsgIndex].guards = dataObj.guards
+                            messages.value[aiMsgIndex].toolsExpanded = false
+                        }
+                        if (dataObj.text) {
+                            messages.value[aiMsgIndex].content += dataObj.text
+                        }
                         scrollToBottom()
                     } catch (e) {}
                 }
@@ -228,7 +330,126 @@ const sendMessage = async () => {
                 
                 <div :class="msg.role === 'user' ? 'bg-slate-900 text-white rounded-tr-sm' : 'bg-white border border-slate-200 text-slate-800 rounded-tl-sm'" class="px-5 py-3.5 rounded-2xl shadow-sm text-[15px] max-w-[85%] leading-relaxed">
                     <div v-if="msg.role === 'user'" class="whitespace-pre-wrap">{{ msg.content }}</div>
-                    <div v-else class="w-full">
+                    <div v-else class="w-full space-y-3">
+                        <div
+                            v-if="hasMemoryMeta(msg) || hasToolsMeta(msg)"
+                            class="space-y-1.5"
+                        >
+                            <!-- 习惯侧写：默认折叠 -->
+                            <div
+                                v-if="hasMemoryMeta(msg)"
+                                class="rounded-xl border border-slate-200 bg-slate-50 overflow-hidden"
+                            >
+                                <button
+                                    type="button"
+                                    class="w-full flex items-center gap-1.5 px-3 py-2 text-left hover:bg-slate-100/80 transition-colors"
+                                    :aria-expanded="!!msg.memoryExpanded"
+                                    @click="toggleMemory(msg)"
+                                >
+                                    <span class="text-[11px] font-bold text-slate-700 whitespace-nowrap">
+                                        🧠 已召回习惯侧写（{{ memorySummary(msg) }}）
+                                    </span>
+                                    <span
+                                        class="text-slate-500 text-[10px] leading-none select-none transition-transform duration-200"
+                                        :class="msg.memoryExpanded ? 'rotate-180' : ''"
+                                        aria-hidden="true"
+                                    >▾</span>
+                                    <span class="text-[10px] text-slate-400 font-medium truncate">
+                                        {{ msg.memoryExpanded ? '点击收起' : '点击查看' }}
+                                    </span>
+                                </button>
+                                <div
+                                    v-show="msg.memoryExpanded"
+                                    class="px-3 pb-2.5 space-y-1.5 border-t border-slate-200 text-[11px] text-slate-600"
+                                >
+                                    <div v-if="(msg.memoryTrace.query_hits || []).length">
+                                        <div class="font-semibold text-slate-700 mb-1">问题相关</div>
+                                        <div
+                                            v-for="(h, hi) in msg.memoryTrace.query_hits"
+                                            :key="'q'+hi"
+                                            class="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 mb-1"
+                                        >{{ h }}</div>
+                                    </div>
+                                    <div v-if="(msg.memoryTrace.fixed_hits || []).length">
+                                        <div class="font-semibold text-slate-700 mb-1">固定侧写</div>
+                                        <div
+                                            v-for="(h, hi) in msg.memoryTrace.fixed_hits"
+                                            :key="'f'+hi"
+                                            class="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 mb-1"
+                                        >{{ h }}</div>
+                                    </div>
+                                    <div v-if="msg.memoryTrace.error" class="text-rose-600">
+                                        {{ msg.memoryTrace.error }}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 工具 + 闸门：默认折叠，中文摘要 -->
+                            <div
+                                v-if="hasToolsMeta(msg)"
+                                class="rounded-xl border border-slate-200 bg-slate-50 overflow-hidden"
+                            >
+                                <button
+                                    type="button"
+                                    class="w-full flex items-center gap-1.5 px-3 py-2 text-left hover:bg-slate-100/80 transition-colors"
+                                    :aria-expanded="!!msg.toolsExpanded"
+                                    @click="toggleTools(msg)"
+                                >
+                                    <span class="text-[11px] font-bold text-slate-700 whitespace-nowrap">
+                                        🧭 {{ toolsSummary(msg) }}
+                                    </span>
+                                    <span
+                                        class="text-slate-500 text-[10px] leading-none select-none transition-transform duration-200"
+                                        :class="msg.toolsExpanded ? 'rotate-180' : ''"
+                                        aria-hidden="true"
+                                    >▾</span>
+                                    <span class="text-[10px] text-slate-400 font-medium truncate">
+                                        {{ msg.toolsExpanded ? '点击收起' : '点击查看详情' }}
+                                    </span>
+                                </button>
+                                <div
+                                    v-show="msg.toolsExpanded"
+                                    class="px-3 pb-2.5 space-y-2 border-t border-slate-200"
+                                >
+                                    <div
+                                        v-for="(step, sIdx) in (msg.toolTrace || [])"
+                                        :key="sIdx"
+                                        class="text-[11px] text-slate-600 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5"
+                                    >
+                                        <div class="font-semibold text-slate-700">
+                                            第 {{ step.round }} 步 · {{ toolLabel(step.tool) }}
+                                            <span
+                                                class="ml-1"
+                                                :class="step.ok ? 'text-emerald-600' : 'text-rose-600'"
+                                            >· {{ toolStatusText(step) }}</span>
+                                        </div>
+                                        <div class="text-[10px] text-slate-400 font-mono mt-0.5">
+                                            tool: {{ step.tool }}
+                                        </div>
+                                    </div>
+                                    <div
+                                        v-if="msg.guards && msg.guards.length"
+                                        class="flex flex-wrap gap-1.5"
+                                    >
+                                        <span
+                                            v-for="(g, gIdx) in msg.guards"
+                                            :key="gIdx"
+                                            class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100"
+                                            :title="g"
+                                        >
+                                            🛡️ {{ guardLabel(g) }}
+                                        </span>
+                                    </div>
+                                    <div
+                                        v-if="msg.guards && msg.guards.length"
+                                        class="text-[10px] text-slate-400 font-mono"
+                                    >
+                                        raw: {{ msg.guards.join(', ') }}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <template v-for="(block, bIdx) in parseMessage(msg.content, isGenerating && index === messages.length - 1)" :key="bIdx">
                             <div v-if="block.type === 'text'" class="markdown-body inline-block w-full">
                                 <span v-html="marked.parse(block.content)"></span>
